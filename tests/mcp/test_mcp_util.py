@@ -1867,6 +1867,209 @@ def test_to_function_tool_failed_strict_conversion_keeps_original_schema():
     }
 
 
+@pytest.mark.parametrize(
+    "free_form_schema",
+    [
+        {"type": "object", "description": "key/value pairs"},
+        {"type": "object", "properties": {}},
+        {"type": "object", "properties": {}, "required": []},
+        {
+            "type": "object",
+            "properties": {},
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+        },
+        {"type": "object", "properties": {}, "$comment": "Arbitrary values."},
+    ],
+    ids=[
+        "properties-omitted",
+        "properties-empty",
+        "required-empty",
+        "schema-metadata",
+        "comment-metadata",
+    ],
+)
+def test_to_function_tool_free_form_object_arg_falls_back_to_non_strict(free_form_schema):
+    schema = {
+        "type": "object",
+        "properties": {
+            "target": {"type": "string"},
+            "keysAndValues": free_form_schema,
+        },
+        "required": ["target", "keysAndValues"],
+    }
+    tool = MCPTool(name="set_properties", inputSchema=schema)
+
+    function_tool = MCPUtil.to_function_tool(tool, FakeMCPServer(), convert_schemas_to_strict=True)
+
+    assert function_tool.strict_json_schema is False
+    assert function_tool.params_json_schema == schema
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        {"type": "object", "description": "Arbitrary key/value pairs"},
+        {"type": "object", "properties": {}},
+        {"type": "object", "properties": {}, "required": []},
+        {
+            "type": "object",
+            "properties": {},
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+        },
+        {"type": "object", "properties": {}, "$comment": "Arbitrary values."},
+    ],
+    ids=[
+        "properties-omitted",
+        "properties-empty",
+        "required-empty",
+        "schema-metadata",
+        "comment-metadata",
+    ],
+)
+def test_to_function_tool_free_form_root_falls_back_to_non_strict(schema):
+    tool = MCPTool(name="set_properties", inputSchema=schema)
+
+    function_tool = MCPUtil.to_function_tool(tool, FakeMCPServer(), convert_schemas_to_strict=True)
+
+    assert function_tool.strict_json_schema is False
+    assert function_tool.params_json_schema == {**schema, "properties": {}}
+
+
+def test_to_function_tool_finds_free_form_object_in_array_items():
+    schema = {
+        "type": "object",
+        "properties": {
+            "entries": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {},
+                    "$comment": "Arbitrary values.",
+                },
+            },
+        },
+    }
+    tool = MCPTool(name="set_properties", inputSchema=schema)
+
+    function_tool = MCPUtil.to_function_tool(tool, FakeMCPServer(), convert_schemas_to_strict=True)
+
+    assert function_tool.strict_json_schema is False
+    assert function_tool.params_json_schema == schema
+
+
+def test_to_function_tool_does_not_convert_schema_when_conversion_is_disabled():
+    schema = {"type": "object", "properties": {"value": {"type": "string"}}}
+    tool = MCPTool(name="non_strict", inputSchema=schema)
+
+    with patch(
+        "agents.mcp.util.ensure_strict_json_schema",
+        side_effect=AssertionError("Strict conversion should not run."),
+    ):
+        function_tool = MCPUtil.to_function_tool(
+            tool, FakeMCPServer(), convert_schemas_to_strict=False
+        )
+
+    assert function_tool.strict_json_schema is False
+    assert function_tool.params_json_schema == schema
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        {},
+        {"type": "object", "additionalProperties": False},
+        {
+            "type": "object",
+            "properties": {"value": {"type": "string"}},
+        },
+    ],
+    ids=["empty-schema", "explicitly-closed", "declared-property"],
+)
+def test_to_function_tool_strictable_closed_and_shaped_objects_stay_strict(schema):
+    tool = MCPTool(name="strictable", inputSchema=schema)
+
+    function_tool = MCPUtil.to_function_tool(tool, FakeMCPServer(), convert_schemas_to_strict=True)
+
+    assert function_tool.strict_json_schema is True
+    assert function_tool.params_json_schema["additionalProperties"] is False
+
+
+def test_to_function_tool_advanced_open_root_falls_back_without_schema_evaluation():
+    schema = {
+        "type": "object",
+        "allOf": [{"type": "object", "properties": {"value": {"type": "string"}}}],
+    }
+    tool = MCPTool(name="advanced", inputSchema=schema)
+
+    function_tool = MCPUtil.to_function_tool(tool, FakeMCPServer(), convert_schemas_to_strict=True)
+
+    assert function_tool.strict_json_schema is False
+    assert function_tool.params_json_schema == {**schema, "properties": {}}
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        {
+            "type": "object",
+            "properties": {
+                "value": {
+                    "anyOf": [
+                        {"type": "object", "properties": {}},
+                        {"type": "null"},
+                    ]
+                }
+            },
+        },
+        {
+            "type": "object",
+            "properties": {
+                "value": {
+                    "oneOf": [
+                        {"type": "object", "properties": {}},
+                        {"type": "null"},
+                    ]
+                }
+            },
+        },
+        {
+            "type": "object",
+            "properties": {
+                "value": {"allOf": [{"type": "object", "properties": {}}]},
+            },
+        },
+        {
+            "type": "object",
+            "properties": {"value": {"$ref": "#/$defs/value"}},
+            "$defs": {"value": {"type": "object", "properties": {}}},
+        },
+        {
+            "type": "object",
+            "properties": {"value": {"$ref": "#/definitions/value"}},
+            "definitions": {"value": {"type": "object", "properties": {}}},
+        },
+        {
+            "type": "object",
+            "properties": {
+                "value": {
+                    "$ref": "#/components/schemas/value",
+                    "description": "Arbitrary values.",
+                }
+            },
+            "components": {"schemas": {"value": {"type": "object", "properties": {}}}},
+        },
+    ],
+    ids=["any-of", "one-of", "all-of", "defs", "definitions", "ref-reentry"],
+)
+def test_to_function_tool_finds_free_form_objects_in_supported_schema_nodes(schema):
+    tool = MCPTool(name="nested", inputSchema=schema)
+
+    function_tool = MCPUtil.to_function_tool(tool, FakeMCPServer(), convert_schemas_to_strict=True)
+
+    assert function_tool.strict_json_schema is False
+    assert function_tool.params_json_schema == schema
+
+
 def test_to_function_tool_nullable_root_falls_back_to_non_strict():
     schema = {
         "anyOf": [

@@ -45,6 +45,16 @@ def test_object_without_additional_properties():
     assert result["properties"]["a"] == {"type": "string"}
 
 
+def test_open_object_rejection_is_opt_in():
+    schema = {"type": "object", "properties": {}}
+
+    result = ensure_strict_json_schema(schema.copy())
+
+    assert result["additionalProperties"] is False
+    with pytest.raises(UserError, match="permits undeclared properties"):
+        ensure_strict_json_schema(schema.copy(), _reject_open_objects=True)
+
+
 def test_typeless_root_is_normalized_to_object():
     result = ensure_strict_json_schema({"properties": {"a": {"type": "string"}}})
 

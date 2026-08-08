@@ -27,12 +27,18 @@ _ADDITIONAL_PROPERTIES_ERROR = (
     "to not use a strict schema."
 )
 
+_OPEN_OBJECT_ERROR = (
+    "JSON schema contains an object that permits undeclared properties and cannot be converted "
+    "to a strict schema without changing its accepted values."
+)
+
 
 class _NodeBudget:
-    """Tracks the remaining schema-node expansion budget across the recursion."""
+    """Tracks state shared across recursive schema conversion."""
 
-    def __init__(self, limit: int) -> None:
+    def __init__(self, limit: int, *, reject_open_objects: bool = False) -> None:
         self.remaining = limit
+        self.reject_open_objects = reject_open_objects
 
     def spend(self) -> None:
         self.remaining -= 1
@@ -46,6 +52,8 @@ class _NodeBudget:
 
 def ensure_strict_json_schema(
     schema: dict[str, Any],
+    *,
+    _reject_open_objects: bool = False,
 ) -> dict[str, Any]:
     """Mutates the given JSON schema to ensure it conforms to the `strict` standard
     that the OpenAI API expects.
@@ -53,7 +61,10 @@ def ensure_strict_json_schema(
     if schema == {}:
         return copy.deepcopy(_EMPTY_SCHEMA)
     converted = _ensure_strict_json_schema(
-        schema, path=(), root=schema, budget=_NodeBudget(_MAX_SCHEMA_NODES)
+        schema,
+        path=(),
+        root=schema,
+        budget=_NodeBudget(_MAX_SCHEMA_NODES, reject_open_objects=_reject_open_objects),
     )
     return _ensure_strict_root(converted)
 
@@ -116,6 +127,14 @@ def _ensure_strict_json_schema(
     elif typ is None and json_schema.get("additionalProperties", False) is not False:
         raise UserError(_ADDITIONAL_PROPERTIES_ERROR)
     is_object = typ == "object" or (is_list(typ) and "object" in typ)
+    has_no_declared_properties = "properties" not in json_schema or properties == {}
+    if (
+        budget.reject_open_objects
+        and is_object
+        and has_no_declared_properties
+        and json_schema.get("additionalProperties") is not False
+    ):
+        raise UserError(_OPEN_OBJECT_ERROR)
     if is_object and "additionalProperties" not in json_schema:
         json_schema["additionalProperties"] = False
     elif (
